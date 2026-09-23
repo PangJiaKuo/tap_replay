@@ -1,0 +1,28 @@
+name: Build APK
+# 把本工程推到 GitHub 后，在 Actions 页手动点 "Run workflow" 即可云端出 APK
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # 没有 wrapper 时用系统 gradle 生成 wrapper 再构建
+      - name: Build debug APK
+        run: |
+          gradle wrapper --gradle-version 8.7
+          ./gradlew :app:assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tapreplay-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk

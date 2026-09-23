@@ -1,0 +1,21 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.tapreplay.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.tapreplay.app"
+        minSdk 26                 // dispatchGesture 需要 24+，覆盖 26+ 更稳妥
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+// 零第三方依赖：全部使用 Android 框架自带 API（org.json 内置）

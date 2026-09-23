@@ -1,0 +1,225 @@
+package com.tapreplay.app;
+
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.Intent;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.provider.Settings;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.BaseAdapter;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.ListView;
+import android.widget.PopupMenu;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.List;
+import java.util.Locale;
+
+/** 主页：授权入口 + 宏版本管理（列表 / 重命名 / 副本 / 导入导出 / 删除）。 */
+public class MainActivity extends Activity {
+
+    private static final int REQ_EXPORT = 41, REQ_IMPORT = 42;
+
+    private MacroStore store;
+    private List<MacroModel.Macro> macros;
+    private BaseAdapter adapter;
+    private TextView txtEmpty;
+    private MacroModel.Macro exportTarget;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+        store = new MacroStore(this);
+
+        findViewById(R.id.btnAccessibility).setOnClickListener(v ->
+                startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+        findViewById(R.id.btnOverlay).setOnClickListener(v -> {
+            if (!Settings.canDrawOverlays(this))
+                startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:" + getPackageName())));
+            else
+                toast("悬浮窗权限已授予");
+        });
+        findViewById(R.id.btnPanel).setOnClickListener(v -> showFloatingPanel());
+        findViewById(R.id.btnImport).setOnClickListener(v -> importMacro());
+        txtEmpty = findViewById(R.id.txtEmpty);
+
+        ListView list = findViewById(R.id.listMacros);
+        adapter = new MacroAdapter();
+        list.setAdapter(adapter);
+        list.setEmptyView(txtEmpty);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        refresh();
+    }
+
+    private void refresh() {
+        macros = store.loadAll();
+        adapter.notifyDataSetChanged();
+    }
+
+    // ------------------------------------------------------------ 悬浮条与回放
+
+    private void showFloatingPanel() {
+        if (MacroService.instance == null) {
+            toast("请先在系统设置中开启 TapReplay 无障碍服务");
+            startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+            return;
+        }
+        if (!Settings.canDrawOverlays(this)) {
+            toast("请先授予悬浮窗权限");
+            startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + getPackageName())));
+            return;
+        }
+        MacroService.instance.showOverlay();
+        toast("悬浮控制条已显示，切到目标应用操作吧");
+        moveTaskToBack(true);
+    }
+
+    /** 列表里的回放：3 秒倒计时，留时间切到目标应用。 */
+    private void playWithCountdown(MacroModel.Macro m) {
+        if (MacroService.instance == null) {
+            toast("请先开启无障碍服务");
+            return;
+        }
+        toast("3 秒后开始回放「" + m.name + "」，请切到目标应用");
+        moveTaskToBack(true);
+        new Handler(Looper.getMainLooper()).postDelayed(
+                () -> MacroService.instance.playMacro(m, null), 3000);
+    }
+
+    // ------------------------------------------------------------ 版本管理
+
+    private void showMenu(MacroModel.Macro m, View anchor) {
+        PopupMenu menu = new PopupMenu(this, anchor);
+        menu.getMenu().add("重命名");
+        menu.getMenu().add("复制为新版本");
+        menu.getMenu().add("导出");
+        menu.getMenu().add("删除");
+        menu.setOnMenuItemClickListener(item -> {
+            switch (String.valueOf(item.getTitle())) {
+                case "重命名": renameMacro(m); break;
+                case "复制为新版本":
+                    store.duplicate(m);
+                    refresh();
+                    toast("已创建副本");
+                    break;
+                case "导出": exportMacro(m); break;
+                case "删除":
+                    new AlertDialog.Builder(this)
+                            .setMessage("删除「" + m.name + "」？")
+                            .setPositiveButton("删除", (d, w) -> {
+                                store.delete(m.id);
+                                refresh();
+                            })
+                            .setNegativeButton("取消", null)
+                            .show();
+                    break;
+            }
+            return true;
+        });
+        menu.show();
+    }
+
+    private void renameMacro(MacroModel.Macro m) {
+        EditText input = new EditText(this);
+        input.setText(m.name);
+        input.setSelection(input.getText().length());
+        new AlertDialog.Builder(this)
+                .setTitle("重命名宏")
+                .setView(input)
+                .setPositiveButton("保存", (d, w) -> {
+                    String name = input.getText().toString().trim();
+                    if (!name.isEmpty()) {
+                        m.name = name;
+                        store.save(m);
+                        refresh();
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void exportMacro(MacroModel.Macro m) {
+        exportTarget = m;
+        Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("application/json");
+        i.putExtra(Intent.EXTRA_TITLE, m.name.replaceAll("[\\\\/:*?\"<>|]", "_") + ".json");
+        startActivityForResult(i, REQ_EXPORT);
+    }
+
+    private void importMacro() {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("*/*");
+        startActivityForResult(i, REQ_IMPORT);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        Uri uri = data.getData();
+        try {
+            if (requestCode == REQ_EXPORT && exportTarget != null) {
+                try (OutputStream os = getContentResolver().openOutputStream(uri)) {
+                    store.exportTo(exportTarget, os);
+                }
+                toast("已导出");
+                exportTarget = null;
+            } else if (requestCode == REQ_IMPORT) {
+                MacroModel.Macro m;
+                try (InputStream is = getContentResolver().openInputStream(uri)) {
+                    m = store.importFrom(is);
+                }
+                refresh();
+                toast("已导入「" + m.name + "」");
+            }
+        } catch (Exception e) {
+            toast("操作失败：" + e.getMessage());
+        }
+    }
+
+    // ------------------------------------------------------------ 列表
+
+    private class MacroAdapter extends BaseAdapter {
+        @Override public int getCount() { return macros == null ? 0 : macros.size(); }
+        @Override public Object getItem(int i) { return macros.get(i); }
+        @Override public long getItemId(int i) { return i; }
+
+        @Override public View getView(int i, View v, ViewGroup parent) {
+            if (v == null) v = getLayoutInflater().inflate(R.layout.row_macro, parent, false);
+            MacroModel.Macro m = macros.get(i);
+            ((TextView) v.findViewById(R.id.txtName)).setText(m.name);
+            String when = new SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(new Date(m.updated));
+            String desc = m.actions.size() + " 个手势 · " + m.strokeCount() + " 段轨迹 · 约 "
+                    + Math.max(1, m.totalDuration() / 1000) + " 秒 · 更新 " + when;
+            ((TextView) v.findViewById(R.id.txtDesc)).setText(desc);
+            Button play = v.findViewById(R.id.btnPlay);
+            play.setOnClickListener(x -> playWithCountdown(m));
+            Button more = v.findViewById(R.id.btnMore);
+            more.setOnClickListener(x -> showMenu(m, more));
+            return v;
+        }
+    }
+
+    private void toast(String s) {
+        Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
+    }
+}
