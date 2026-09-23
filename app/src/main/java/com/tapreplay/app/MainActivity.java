@@ -54,6 +54,7 @@ public class MainActivity extends Activity {
         findViewById(R.id.btnPanel).setOnClickListener(v -> showFloatingPanel());
         findViewById(R.id.btnImport).setOnClickListener(v -> importMacro());
         txtEmpty = findViewById(R.id.txtEmpty);
+        setupHonorSection();
 
         ListView list = findViewById(R.id.listMacros);
         adapter = new MacroAdapter();
@@ -70,6 +71,85 @@ public class MainActivity extends Activity {
     private void refresh() {
         macros = store.loadAll();
         adapter.notifyDataSetChanged();
+    }
+
+    // ------------------------------------------------------------ 荣耀/MagicOS 适配
+
+    private static final int REQ_NOTIF = 43;
+
+    private void setupHonorSection() {
+        TextView note = findViewById(R.id.txtHonorNote);
+        boolean isHonor = "honor".equalsIgnoreCase(android.os.Build.MANUFACTURER);
+        if (isHonor)
+            note.setText("检测到荣耀设备（" + android.os.Build.MODEL
+                    + " / MagicOS）：请完成下面三项保活设置，否则悬浮条会被后台清理");
+
+        findViewById(R.id.btnBattery).setOnClickListener(v -> {
+            try {
+                // 直接申请加入电池优化白名单（荣耀400/MagicOS 9 有效）
+                startActivity(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.parse("package:" + getPackageName())));
+            } catch (Exception e) {
+                try {
+                    startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+                } catch (Exception e2) {
+                    toast("请手动到 设置→应用→耗电管理 中允许本应用后台运行");
+                }
+            }
+        });
+
+        findViewById(R.id.btnHonorBg).setOnClickListener(v -> openHonorAutoStart());
+
+        findViewById(R.id.btnKeepAlive).setOnClickListener(v -> {
+            if (android.os.Build.VERSION.SDK_INT >= 33
+                    && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                    != getPackageManager().PERMISSION_GRANTED) {
+                requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIF);
+                return;
+            }
+            KeepAliveService.start(this);
+            toast("保活服务已开启：状态栏出现「TapReplay 运行中」即生效");
+        });
+    }
+
+    /** 荣耀自启动/后台运行入口：MagicOS 各版本路径不同，多候选降级。 */
+    private void openHonorAutoStart() {
+        String[][] candidates = {
+                // MagicOS 8/9：手机管家 → 应用启动管理
+                {"com.hihonor.systemmanager", "com.hihonor.systemmanager.optimize.process.ProtectActivity"},
+                // 旧 Magic UI / 华为 EMUI
+                {"com.huawei.systemmanager", "com.huawei.systemmanager.optimize.process.ProtectActivity"},
+                {"com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"},
+        };
+        for (String[] c : candidates) {
+            try {
+                Intent i = new Intent();
+                i.setClassName(c[0], c[1]);
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(i);
+                return;
+            } catch (Exception ignored) { }
+        }
+        try {
+            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + getPackageName())));
+            toast("请在应用信息页允许「自启动 / 后台运行」");
+        } catch (Exception e) {
+            toast("请手动到 手机管家→应用启动管理 中允许本应用");
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] perms, int[] grants) {
+        super.onRequestPermissionsResult(requestCode, perms, grants);
+        if (requestCode == REQ_NOTIF) {
+            if (grants.length > 0 && grants[0] == getPackageManager().PERMISSION_GRANTED) {
+                KeepAliveService.start(this);
+                toast("保活服务已开启");
+            } else {
+                toast("未授予通知权限，保活服务无法显示常驻通知（荣耀机型建议允许）");
+            }
+        }
     }
 
     // ------------------------------------------------------------ 悬浮条与回放
@@ -100,7 +180,7 @@ public class MainActivity extends Activity {
         toast("3 秒后开始回放「" + m.name + "」，请切到目标应用");
         moveTaskToBack(true);
         new Handler(Looper.getMainLooper()).postDelayed(
-                () -> MacroService.instance.playMacro(m, null), 3000);
+                () -> MacroService.instance.playMacro(m), 3000);
     }
 
     // ------------------------------------------------------------ 版本管理

@@ -70,6 +70,7 @@ public final class MacroModel {
         public String id, name;
         public long created, updated;
         public int width, height;   // 录制时屏幕分辨率：换设备/旋转后回放按比例缩放
+        public int rotation;        // 录制时屏幕方向（Surface.ROTATION_*）
         public final List<Action> actions = new ArrayList<>();
 
         public int strokeCount() {
@@ -89,6 +90,7 @@ public final class MacroModel {
             o.put("id", id); o.put("name", name);
             o.put("created", created); o.put("updated", updated);
             o.put("width", width); o.put("height", height);
+            o.put("rotation", rotation);
             o.put("format", 1);
             JSONArray arr = new JSONArray();
             for (Action a : actions) arr.put(a.toJson());
@@ -110,6 +112,7 @@ public final class MacroModel {
             m.updated = o.optLong("updated");
             m.width = o.optInt("width", 1080);
             m.height = o.optInt("height", 1920);
+            m.rotation = o.optInt("rotation", 0);
             JSONArray arr = o.getJSONArray("actions");
             for (int i = 0; i < arr.length(); i++)
                 m.actions.add(Action.fromJson(arr.getJSONObject(i)));

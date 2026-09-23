@@ -8,18 +8,23 @@ import android.graphics.Point;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.DisplayMetrics;
+import android.view.Surface;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.widget.Toast;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
- * 无障碍服务核心：
- * 1. 用 dispatchGesture 回放/透传手势（注入的触摸会穿过无障碍悬浮层直达底层应用）；
- * 2. 持有悬浮控制层（录制面板 + 录制触摸捕获层）。
+ * 无障碍服务核心 v2：
+ * 1. dispatchGesture 回放（注入触摸会命中上层悬浮窗，故回放期间面板隐藏，见 OverlayController）；
+ * 2. 回放坐标做旋转 + 分辨率变换并钳制到当前屏幕内；
+ * 3. 回放开始/结束联动悬浮层状态。
  */
 public class MacroService extends AccessibilityService {
 
-    public static MacroService instance;          // MainActivity 用它判断服务是否已开启
+    public static MacroService instance;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private OverlayController overlay;
@@ -59,30 +64,44 @@ public class MacroService extends AccessibilityService {
         if (overlay != null) overlay.showPanel();
     }
 
+    /** 悬浮条显示期间拉起保活前台服务（荣耀/MagicOS 后台管控激进）。 */
+    void startKeepAlive() {
+        KeepAliveService.start(this);
+    }
+
+    void stopKeepAlive() {
+        KeepAliveService.stop(this);
+    }
+
     public boolean isPlaying() {
         Thread t = playThread;
         return t != null && t.isAlive();
     }
 
     /** 回放整个宏（后台线程，可被 stopPlayback 打断）。 */
-    public synchronized void playMacro(MacroModel.Macro m, Runnable onDone) {
+    public synchronized void playMacro(MacroModel.Macro m) {
         if (isPlaying()) return;
         if (m == null || m.actions.isEmpty()) {
             toast("这个宏是空的，先录制一段操作吧");
             return;
         }
         cancelled = false;
+        ui.post(() -> overlay.onPlayStart());
+        toast("回放「" + m.name + "」…");
         playThread = new Thread(() -> {
             Point size = screenSize();
-            float sx = size.x / (float) Math.max(1, m.width);
-            float sy = size.y / (float) Math.max(1, m.height);
-            for (MacroModel.Action a : m.actions) {
+            int delta = (displayRotation() - m.rotation + 4) % 4;
+            List<MacroModel.Action> transformed = transform(m, size, delta);
+            for (MacroModel.Action a : transformed) {
                 if (cancelled || Thread.currentThread().isInterrupted()) break;
-                dispatchAction(a, sx, sy);
+                dispatchAction(a);
                 sleep(a.maxDuration());
                 sleep(a.delayAfter);
             }
-            ui.post(() -> { if (onDone != null) onDone.run(); });
+            ui.post(() -> {
+                overlay.onPlayEnd();
+                toast("回放结束");
+            });
         }, "macro-play");
         playThread.start();
     }
@@ -93,17 +112,51 @@ public class MacroService extends AccessibilityService {
         if (t != null) t.interrupt();
     }
 
-    /** 录制时的实时透传：用户抬手后立即把刚录下的手势注入底层应用，实现"边录边生效"。 */
-    public void dispatchAction(MacroModel.Action a, float sx, float sy) {
+    /** 把录制坐标按当前旋转/分辨率变换到注入坐标，并钳制到屏幕内。 */
+    private List<MacroModel.Action> transform(MacroModel.Macro m, Point cur, int delta) {
+        float rw = Math.max(1, m.width), rh = Math.max(1, m.height);
+        float cw = cur.x, ch = cur.y;
+        List<MacroModel.Action> out = new ArrayList<>();
+        for (MacroModel.Action a : m.actions) {
+            MacroModel.Action na = new MacroModel.Action();
+            na.delayAfter = a.delayAfter;
+            for (MacroModel.Stroke s : a.strokes) {
+                MacroModel.Stroke ns = new MacroModel.Stroke();
+                ns.duration = s.duration;
+                for (float[] p : s.pts) {
+                    float x = p[0], y = p[1], X, Y;
+                    switch (delta) {
+                        case Surface.ROTATION_90:
+                            X = (rh - y) * cw / rh; Y = x * ch / rw; break;
+                        case Surface.ROTATION_180:
+                            X = (rw - x) * cw / rw; Y = (rh - y) * ch / rh; break;
+                        case Surface.ROTATION_270:
+                            X = y * cw / rh; Y = (rw - x) * ch / rw; break;
+                        default:
+                            X = x * cw / rw; Y = y * ch / rh; break;
+                    }
+                    X = Math.min(Math.max(X, 0), cw - 1);
+                    Y = Math.min(Math.max(Y, 0), ch - 1);
+                    ns.pts.add(new float[]{X, Y});
+                }
+                na.strokes.add(ns);
+            }
+            out.add(na);
+        }
+        return out;
+    }
+
+    /** 注入一个手势（多指并行轨迹同一个 GestureDescription，同时开始）。 */
+    void dispatchAction(MacroModel.Action a) {
         GestureDescription.Builder b = new GestureDescription.Builder();
         for (MacroModel.Stroke s : a.strokes) {
             if (s.pts.isEmpty()) continue;
             Path p = new Path();
             float[] f0 = s.pts.get(0);
-            p.moveTo(f0[0] * sx, f0[1] * sy);
+            p.moveTo(f0[0], f0[1]);
             for (int i = 1; i < s.pts.size(); i++) {
                 float[] pi = s.pts.get(i);
-                p.lineTo(pi[0] * sx, pi[1] * sy);
+                p.lineTo(pi[0], pi[1]);
             }
             b.addStroke(new GestureDescription.StrokeDescription(p, 0, Math.max(1, s.duration)));
         }
@@ -124,6 +177,16 @@ public class MacroService extends AccessibilityService {
             dm = getResources().getDisplayMetrics();
         }
         return new Point(dm.widthPixels, dm.heightPixels);
+    }
+
+    int displayRotation() {
+        try {
+            WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+            //noinspection deprecation
+            return wm.getDefaultDisplay().getRotation();
+        } catch (Exception e) {
+            return Surface.ROTATION_0;
+        }
     }
 
     void toast(String s) {

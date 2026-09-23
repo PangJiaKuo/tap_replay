@@ -4,6 +4,8 @@ import android.annotation.SuppressLint;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Point;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
@@ -20,25 +22,32 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * 悬浮层控制：控制条（录制/回放/选宏/关闭）+ 录制时的全屏触摸捕获层。
- * 两个窗口都是 TYPE_ACCESSIBILITY_OVERLAY：注入的手势会穿过它们直达底层应用，
- * 所以录制时可以"边录边生效"，回放也不会被自己的悬浮层截获。
+ * 悬浮层控制 v2。
+ *
+ * 关键认知：dispatchGesture 注入的触摸会命中"最上层的无障碍悬浮窗"。
+ * 所以任何注入发生的时刻，面板必须整体隐藏，否则复刻的点击会砸中面板按钮
+ * （v1 的"多出点击"根因）；录制时若做实时透传，注入会打回全屏捕获层形成
+ * 自录自放死循环——因此录制采用盲录（注入只在回放阶段发生，录制零注入）。
+ *
+ * 状态机：IDLE(完整面板) → RECORDING(捕获层+防误触小条) / PLAYING(防误触小条)。
  */
 public class OverlayController {
 
     private final MacroService svc;
     private final MacroStore store;
     private final WindowManager wm;
+    private final Handler ui = new Handler(Looper.getMainLooper());
 
-    private View panel, capture;
+    private View panel, capture, chip;
+    private TextView chipText;
     private Button btnRec, btnPlay, btnMacro;
-    private TextView recHint;
 
     private boolean recording;
     private MacroModel.Macro current;                       // 正在录制的宏
     private MacroModel.Macro selected;                      // 面板选中的回放对象
-    private MacroModel.Action lastAction;                   // 上一个手势（用于回填真实间隔）
+    private MacroModel.Action lastAction;                   // 上一个手势（回填真实间隔）
     private long lastGestureEnd = -1;
+    private long lastChipTap;                               // 录制小条双击判定
     private final Map<Integer, List<float[]>> paths = new HashMap<>();
     private final Map<Integer, Long> downAt = new HashMap<>();
     private final List<MacroModel.Stroke> finishedStrokes = new ArrayList<>();
@@ -49,11 +58,11 @@ public class OverlayController {
         this.wm = (WindowManager) svc.getSystemService(MacroService.WINDOW_SERVICE);
     }
 
-    // ------------------------------------------------------------ 控制条
+    // ------------------------------------------------------------ IDLE 面板
 
     @SuppressLint("ClickableViewAccessibility")
     public void showPanel() {
-        if (panel != null) return;
+        if (panel != null || recording || svc.isPlaying()) return;
         panel = LayoutInflater.from(svc).inflate(R.layout.overlay_panel, null);
         panel.setBackgroundColor(Color.TRANSPARENT);
 
@@ -62,13 +71,12 @@ public class OverlayController {
         btnMacro = panel.findViewById(R.id.btnMacro);
         Button btnClose = panel.findViewById(R.id.btnClose);
 
-        btnRec.setOnClickListener(v -> toggleRecord());
-        btnPlay.setOnClickListener(v -> togglePlay());
+        btnRec.setOnClickListener(v -> startRecord());
+        btnPlay.setOnClickListener(v -> startPlay());
         btnClose.setOnClickListener(v -> hideAll());
         btnMacro.setOnClickListener(v -> cycleMacro());
         refreshMacroButton();
 
-        // 拖动控制条
         final WindowManager.LayoutParams lp = overlayParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT);
@@ -79,7 +87,7 @@ public class OverlayController {
                 switch (e.getActionMasked()) {
                     case MotionEvent.ACTION_DOWN:
                         dx = lp.x - e.getRawX(); dy = lp.y - e.getRawY();
-                        return false;   // 不拦截按钮点击
+                        return false;
                     case MotionEvent.ACTION_MOVE:
                         lp.x = (int) (e.getRawX() + dx);
                         lp.y = (int) (e.getRawY() + dy);
@@ -90,7 +98,16 @@ public class OverlayController {
                 }
             }
         });
-        wm.addView(panel, lp);
+        try { wm.addView(panel, lp); } catch (Exception e) { panel = null; }
+        svc.startKeepAlive();
+    }
+
+    private void removePanel() {
+        if (panel != null) {
+            try { wm.removeView(panel); } catch (Exception ignored) { }
+            panel = null;
+            btnRec = btnPlay = btnMacro = null;
+        }
     }
 
     private void refreshMacroButton() {
@@ -108,7 +125,10 @@ public class OverlayController {
             svc.toast("还没有宏，先点 ⏺ 录一个吧");
             return;
         }
-        int i = all.indexOf(selected);
+        int i = -1;
+        if (selected != null)
+            for (int k = 0; k < all.size(); k++)
+                if (all.get(k).id.equals(selected.id)) { i = k; break; }
         selected = all.get((i + 1) % all.size());
         refreshMacroButton();
         svc.toast("已选中：" + selected.name);
@@ -118,12 +138,58 @@ public class OverlayController {
         return n.length() <= 6 ? n : n.substring(0, 6) + "…";
     }
 
-    // ------------------------------------------------------------ 录制
+    // ------------------------------------------------------------ 防误触小条
 
-    private void toggleRecord() {
-        if (recording) stopRecord();
-        else startRecord();
+    /** 录制/回放期间唯一保留的悬浮物：小条。面板隐藏，注入的触摸不会误伤按钮。 */
+    private void showChip(boolean forPlayback) {
+        removeChip();
+        chip = LayoutInflater.from(svc).inflate(R.layout.overlay_chip, null);
+        chipText = chip.findViewById(R.id.chipText);
+        WindowManager.LayoutParams lp = overlayParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT);
+        lp.gravity = android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL;
+        lp.y = 36;
+        if (forPlayback) {
+            chipText.setText("⏹ 回放中 · 长按停止");
+            // 长按 600ms 停止：注入的短触/滑动不会误触发
+            chip.setOnTouchListener(new View.OnTouchListener() {
+                final Runnable stopper = () -> svc.stopPlayback();
+                @Override public boolean onTouch(View v, MotionEvent e) {
+                    switch (e.getActionMasked()) {
+                        case MotionEvent.ACTION_DOWN:
+                            ui.postDelayed(stopper, 600);
+                            return true;
+                        case MotionEvent.ACTION_UP:
+                        case MotionEvent.ACTION_CANCEL:
+                            ui.removeCallbacks(stopper);
+                            return true;
+                        default:
+                            return true;
+                    }
+                }
+            });
+        } else {
+            chipText.setText("● 录制中 0 个手势 · 双击结束");
+            // 双击停止：注入的单次点击不会误触发
+            chip.setOnClickListener(v -> {
+                long t = System.currentTimeMillis();
+                if (t - lastChipTap < 350) stopRecord();
+                lastChipTap = t;
+            });
+        }
+        try { wm.addView(chip, lp); } catch (Exception e) { chip = null; chipText = null; }
     }
+
+    private void removeChip() {
+        if (chip != null) {
+            try { wm.removeView(chip); } catch (Exception ignored) { }
+            chip = null;
+            chipText = null;
+        }
+    }
+
+    // ------------------------------------------------------------ 录制（盲录）
 
     private void startRecord() {
         Point size = svc.screenSize();
@@ -131,62 +197,54 @@ public class OverlayController {
         current.name = "宏 " + new SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(new Date());
         current.width = size.x;
         current.height = size.y;
+        current.rotation = svc.displayRotation();
         lastAction = null;
         lastGestureEnd = -1;
         paths.clear();
         downAt.clear();
-        recording = true;
         finishedStrokes.clear();
-        btnRec.setText("⏹");
-        btnPlay.setEnabled(false);
+        recording = true;
+        removePanel();          // 面板隐藏：之后的注入（回放验证）不会误触按钮
         addCaptureView();
-        svc.toast("录制中：开始操作吧（触摸会同步生效）");
+        showChip(false);
+        svc.toast("录制中（应用暂不响应）→ 操作 → 双击顶部小条结束");
     }
 
     private void stopRecord() {
+        if (!recording) return;
         recording = false;
-        btnRec.setText("⏺");
-        btnPlay.setEnabled(true);
         removeCaptureView();
+        removeChip();
         if (current != null && !current.actions.isEmpty()) {
             store.save(current);
             selected = current;
-            refreshMacroButton();
-            svc.toast("已保存「" + current.name + "」：" + current.actions.size() + " 个手势");
+            svc.toast("已保存「" + current.name + "」：" + current.actions.size() + " 个手势，点 ▶ 验证");
         } else {
             svc.toast("什么都没录到，已丢弃");
         }
         current = null;
+        showPanel();
     }
 
     @SuppressLint("ClickableViewAccessibility")
     private void addCaptureView() {
         if (capture != null) return;
         capture = LayoutInflater.from(svc).inflate(R.layout.overlay_capture, null);
-        recHint = capture.findViewById(R.id.recHint);
         capture.setOnTouchListener((v, e) -> { onCaptureTouch(e); return true; });
         WindowManager.LayoutParams lp = overlayParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT);
-        wm.addView(capture, lp);
-        // 控制条重建到捕获层之上（后加的窗口在上层）
-        if (panel != null) {
-            try { wm.removeView(panel); } catch (Exception ignored) { }
-            panel = null;
-        }
-        showPanel();
-        syncRecordButtons();   // 新按钮状态与录制中保持一致
+        try { wm.addView(capture, lp); } catch (Exception e) { capture = null; }
     }
 
     private void removeCaptureView() {
         if (capture != null) {
             try { wm.removeView(capture); } catch (Exception ignored) { }
             capture = null;
-            recHint = null;
         }
     }
 
-    /** 录制层的核心：按手指（pointerId）累积轨迹，全部抬手后组成一个手势动作。 */
+    /** 录制核心：绝对坐标（getRawX/Y）+ 高密度采样（2px）；多指各自成轨迹。 */
     private void onCaptureTouch(MotionEvent e) {
         long t = e.getEventTime();
         switch (e.getActionMasked()) {
@@ -194,28 +252,29 @@ public class OverlayController {
             case MotionEvent.ACTION_POINTER_DOWN: {
                 int pid = e.getPointerId(e.getActionIndex());
                 List<float[]> pts = new ArrayList<>();
-                pts.add(new float[]{e.getX(e.getActionIndex()), e.getY(e.getActionIndex())});
+                pts.add(new float[]{e.getRawX(e.getActionIndex()), e.getRawY(e.getActionIndex())});
                 paths.put(pid, pts);
                 downAt.put(pid, t);
                 if (paths.size() == 1 && lastGestureEnd >= 0 && lastAction != null)
-                    lastAction.delayAfter = t - lastGestureEnd;   // 回填与上一个手势的真实间隔
+                    lastAction.delayAfter = t - lastGestureEnd;
                 break;
             }
             case MotionEvent.ACTION_MOVE: {
                 for (int i = 0; i < e.getPointerCount(); i++) {
                     List<float[]> pts = paths.get(e.getPointerId(i));
                     if (pts == null) continue;
-                    float x = e.getX(i), y = e.getY(i);
+                    float x = e.getRawX(i), y = e.getRawY(i);
                     float[] last = pts.get(pts.size() - 1);
-                    // 采样节流：位移 ≥ 4px 才记录，避免巨型滑动产生上千个点
                     float ddx = x - last[0], ddy = y - last[1];
-                    if (ddx * ddx + ddy * ddy >= 16) pts.add(new float[]{x, y});
+                    if (ddx * ddx + ddy * ddy >= 4) {          // 2px 采样，保留曲线与末端速度
+                        pts.add(new float[]{x, y});
+                        if (pts.size() > 600) downsample(pts); // 安全上限
+                    }
                 }
                 break;
             }
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_POINTER_UP: {
-                // 每指一条轨迹，先收进 finishedStrokes；全部抬手后才组成一个手势
                 int pid = e.getPointerId(e.getActionIndex());
                 List<float[]> pts = paths.remove(pid);
                 Long d0 = downAt.remove(pid);
@@ -223,22 +282,23 @@ public class OverlayController {
                     MacroModel.Stroke s = new MacroModel.Stroke();
                     s.pts.addAll(pts);
                     s.duration = Math.max(1, t - (d0 != null ? d0 : t));
-                    if (s.pts.size() == 1 && s.duration < 400) s.duration = 60;  // 快速点击 = 60ms 轻触
+                    if (s.pts.size() == 1 && s.duration < 50) s.duration = 60;  // 极短误触 → 标准轻点
                     finishedStrokes.add(s);
                 }
                 if (paths.isEmpty()) finishGesture(t);
                 break;
             }
-            case MotionEvent.ACTION_CANCEL: {
-                // 被打断：丢弃进行中的轨迹
+            case MotionEvent.ACTION_CANCEL:
                 paths.clear();
                 downAt.clear();
                 finishedStrokes.clear();
                 break;
-            }
         }
-        if (recHint != null)
-            recHint.setText(paths.isEmpty() ? "● 录制中" : "● 录制中 " + paths.size() + " 指");
+    }
+
+    private static void downsample(List<float[]> pts) {
+        // 超上限时均匀抽稀一半，保持形状
+        for (int i = pts.size() - 2; i > 0; i -= 2) pts.remove(i);
     }
 
     private void finishGesture(long upTime) {
@@ -249,23 +309,14 @@ public class OverlayController {
         if (a.strokes.isEmpty() || current == null) return;
         current.actions.add(a);
         lastAction = a;
-        // 实时透传：让底层应用同步响应这一次手势
-        svc.dispatchAction(a, 1f, 1f);
-    }
-
-    private void syncRecordButtons() {
-        if (btnRec != null) btnRec.setText(recording ? "⏹" : "⏺");
-        if (btnPlay != null) btnPlay.setEnabled(!recording);
+        if (chipText != null)
+            chipText.setText("● 录制中 " + current.actions.size() + " 个手势 · 双击结束");
+        // 注意：此处不做注入。注入触摸会命中本捕获层形成自录自放循环（v1 教训）。
     }
 
     // ------------------------------------------------------------ 回放
 
-    private void togglePlay() {
-        if (svc.isPlaying()) {
-            svc.stopPlayback();
-            btnPlay.setText("▶");
-            return;
-        }
+    private void startPlay() {
         if (selected == null) {
             List<MacroModel.Macro> all = store.loadAll();
             if (all.isEmpty()) {
@@ -274,13 +325,27 @@ public class OverlayController {
             }
             selected = all.get(0);
         }
+        if (selected.actions.isEmpty()) {
+            svc.toast("这个宏是空的");
+            return;
+        }
         refreshMacroButton();
-        btnPlay.setText("⏹");
-        svc.toast("回放「" + selected.name + "」…");
-        svc.playMacro(selected, () -> {
-            if (btnPlay != null) btnPlay.setText("▶");
-            svc.toast("回放结束");
-        });
+        svc.playMacro(selected);   // 面板/小条切换由 onPlayStart/onPlayEnd 处理
+    }
+
+    /** 回放开始（由 MacroService 调用）：隐藏一切按钮，只留防误触停止条。 */
+    public void onPlayStart() {
+        removePanel();
+        showChip(true);
+    }
+
+    /** 回放结束/中断（由 MacroService 调用）：恢复完整面板。
+     *  延迟 120ms：等回放线程彻底退出，showPanel 的 isPlaying 守卫才不会误判。 */
+    public void onPlayEnd() {
+        ui.postDelayed(() -> {
+            removeChip();
+            showPanel();
+        }, 120);
     }
 
     // ------------------------------------------------------------ 窗口工具
@@ -290,18 +355,18 @@ public class OverlayController {
                 w, h,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                         | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT);
     }
 
     public void hideAll() {
-        if (recording) stopRecord();
-        removeCaptureView();
-        if (panel != null) {
-            try { wm.removeView(panel); } catch (Exception ignored) { }
-            panel = null;
-            btnRec = btnPlay = btnMacro = null;
+        if (recording) {
+            recording = false;
+            removeCaptureView();
+            current = null;
         }
+        removeChip();
+        removePanel();
+        svc.stopKeepAlive();
     }
 }

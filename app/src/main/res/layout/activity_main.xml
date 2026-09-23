@@ -51,6 +51,49 @@
         android:layout_marginTop="8dp"
         android:text="显示悬浮控制条" />
 
+    <!-- 荣耀/MagicOS 适配区：后台保活三步。检测到荣耀设备时高亮提示 -->
+    <TextView
+        android:id="@+id/txtHonorNote"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:text="荣耀/国产 ROM 保活设置（防止悬浮条被后台清理）"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnBattery"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="电池优化白名单"
+            android:textSize="11sp" />
+
+        <Button
+            android:id="@+id/btnHonorBg"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1"
+            android:text="自启动管理"
+            android:textSize="11sp" />
+
+        <Button
+            android:id="@+id/btnKeepAlive"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1"
+            android:text="开启保活服务"
+            android:textSize="11sp" />
+    </LinearLayout>
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

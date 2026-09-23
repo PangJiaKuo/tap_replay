@@ -3,6 +3,11 @@
 
     <!-- 悬浮窗（录制/回放控制条） -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- 荣耀等国产 ROM 保活：前台服务 + 电池优化白名单 + 通知（FGS 必需） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:label="@string/app_name"
@@ -31,5 +36,11 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/macro_service" />
         </service>
+
+        <!-- 保活前台服务：荣耀/MagicOS 后台管控激进，悬浮条显示期间拉起它防止进程被杀 -->
+        <service
+            android:name=".KeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse" />
     </application>
 </manifest>

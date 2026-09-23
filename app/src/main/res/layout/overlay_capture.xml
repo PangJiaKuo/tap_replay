@@ -13,7 +13,7 @@
         android:background="#B321252B"
         android:paddingHorizontal="14dp"
         android:paddingVertical="6dp"
-        android:text="● 录制中"
+        android:text="盲录中：应用暂不响应，结束后点 ▶ 验证"
         android:textColor="#FF5252"
         android:textSize="13sp" />
 </FrameLayout>
