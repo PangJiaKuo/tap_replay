@@ -37,12 +37,15 @@ public final class MacroModel {
         }
     }
 
-    /** 一次手势（可含多指并行轨迹）；delayAfter = 本手势结束到下一手势开始的真实间隔。 */
+    /** 一次手势（可含多指并行轨迹）；delayAfter = 本手势结束到下一手势开始的真实间隔。
+     *  globalAction != 0 时本动作是系统动作（AccessibilityService.GLOBAL_ACTION_*，如返回/主页），无轨迹。 */
     public static final class Action {
         public final List<Stroke> strokes = new ArrayList<>();
         public long delayAfter;
+        public int globalAction;   // 0 = 触摸手势
 
         long maxDuration() {
+            if (globalAction != 0) return 300;   // 系统动作给系统动画留时间
             long d = 0;
             for (Stroke s : strokes) d = Math.max(d, s.duration);
             return d;
@@ -53,6 +56,7 @@ public final class MacroModel {
             JSONArray arr = new JSONArray();
             for (Stroke s : strokes) arr.put(s.toJson());
             o.put("strokes", arr); o.put("gap", delayAfter);
+            o.put("global", globalAction);
             return o;
         }
 
@@ -61,6 +65,7 @@ public final class MacroModel {
             JSONArray arr = o.getJSONArray("strokes");
             for (int i = 0; i < arr.length(); i++) a.strokes.add(Stroke.fromJson(arr.getJSONObject(i)));
             a.delayAfter = Math.max(0, o.optLong("gap", 0));
+            a.globalAction = o.optInt("global", 0);
             return a;
         }
     }

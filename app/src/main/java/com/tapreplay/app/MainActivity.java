@@ -69,6 +69,18 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         refresh();
+        updateStatusLine();
+    }
+
+    /** 状态行：无障碍服务与悬浮窗权限是否就绪，一眼可判（自测排查的第一步）。 */
+    private void updateStatusLine() {
+        TextView st = findViewById(R.id.txtStatus);
+        boolean svcOn = MacroService.instance != null;
+        boolean ovlOn = Settings.canDrawOverlays(this);
+        st.setText("状态：无障碍服务 " + (svcOn ? "✅ 运行中" : "❌ 未开启")
+                + " · 悬浮窗 " + (ovlOn ? "✅" : "❌ 未授权")
+                + (svcOn ? "" : "（先点「1. 无障碍服务」开启）"));
+        st.setTextColor(svcOn && ovlOn ? 0xFF15803D : 0xFFDC2626);
     }
 
     private void refresh() {
@@ -196,16 +208,16 @@ public class MainActivity extends Activity {
         moveTaskToBack(true);
     }
 
-    /** 注入自测：2 秒后在屏幕中央画一个小方形，用于判断设备是否拦截手势注入。 */
+    /** 注入自测 v2：打开系统设置并对列表注入上滑，列表滚动与否就是肉眼判据。 */
     private void testInject() {
         if (MacroService.instance == null) {
             toast("请先开启无障碍服务再测试");
             return;
         }
-        toast("看屏幕中央：2 秒后注入一个小方形轨迹");
-        moveTaskToBack(true);
+        toast("将打开系统设置，1.5 秒后自动上滑列表——请观察列表是否滚动");
+        startActivity(new Intent(Settings.ACTION_SETTINGS));
         new Handler(Looper.getMainLooper()).postDelayed(
-                () -> MacroService.instance.testInject(), 2000);
+                () -> MacroService.instance.testInject(), 1500);
     }
 
     /** 列表里的回放：3 秒倒计时，留时间切到目标应用。 */

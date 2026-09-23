@@ -150,6 +150,19 @@ public class OverlayController {
                 WindowManager.LayoutParams.WRAP_CONTENT);
         lp.gravity = android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL;
         lp.y = 36;
+        // 系统动作键：仅录制态可见（回放态隐藏，防注入误触）
+        int sysVis = forPlayback ? View.GONE : View.VISIBLE;
+        chip.findViewById(R.id.btnSysBack).setVisibility(sysVis);
+        chip.findViewById(R.id.btnSysHome).setVisibility(sysVis);
+        chip.findViewById(R.id.btnSysRecents).setVisibility(sysVis);
+        if (!forPlayback) {
+            chip.findViewById(R.id.btnSysBack).setOnClickListener(v ->
+                    insertGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK));
+            chip.findViewById(R.id.btnSysHome).setOnClickListener(v ->
+                    insertGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME));
+            chip.findViewById(R.id.btnSysRecents).setOnClickListener(v ->
+                    insertGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS));
+        }
         if (forPlayback) {
             chipText.setText("⏹ 回放中 · 长按停止");
             // 长按 600ms 停止：注入的短触/滑动不会误触发
@@ -170,7 +183,7 @@ public class OverlayController {
                 }
             });
         } else {
-            chipText.setText("● 录制中 0 个手势 · 双击结束");
+            chipText.setText("● 录制中 0 步 · 双击结束");
             // 双击停止：注入的单次点击不会误触发
             chip.setOnClickListener(v -> {
                 long t = System.currentTimeMillis();
@@ -207,7 +220,7 @@ public class OverlayController {
         removePanel();          // 面板隐藏：之后的注入（回放验证）不会误触按钮
         addCaptureView();
         showChip(false);
-        svc.toast("录制中：每次抬手后会自动回放刚做的手势，稍候再继续下一步");
+        svc.toast("录制中：抬手后自动回放该手势；返回/主页请点小条上的 ↩ ⌂ ▣ 键插入");
     }
 
     private void stopRecord() {
@@ -317,7 +330,22 @@ public class OverlayController {
 
     private void updateChipCount() {
         if (chipText != null && current != null)
-            chipText.setText("● 录制中 " + current.actions.size() + " 个手势 · 双击结束");
+            chipText.setText("● 录制中 " + current.actions.size() + " 步 · 双击结束");
+    }
+
+    /** 录制中插入系统动作（返回/主页/最近任务）：作为宏的一步记录，并立即生效让用户看到。 */
+    private void insertGlobalAction(int ga) {
+        if (!recording || current == null) return;
+        long t = android.os.SystemClock.uptimeMillis();
+        MacroModel.Action a = new MacroModel.Action();
+        a.globalAction = ga;
+        if (lastGestureEnd >= 0 && lastAction != null)
+            lastAction.delayAfter = t - lastGestureEnd;   // 与手势一致的真实间隔回填
+        lastGestureEnd = t;
+        current.actions.add(a);
+        lastAction = a;
+        svc.performGlobalAction(ga);   // 立即执行：返回/主页/最近任务的变化马上可见
+        updateChipCount();
     }
 
     /** 录制反馈：撤捕获层 → 等窗口移除同步到输入系统 → 注入刚录的手势 → 播完恢复捕获层。 */

@@ -45,6 +45,15 @@
             android:textSize="12sp" />
     </LinearLayout>
 
+    <TextView
+        android:id="@+id/txtStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="状态：检测中…"
+        android:textSize="13sp"
+        android:textStyle="bold" />
+
     <!-- Android 13+ 侧载应用受限设置提示（MagicOS 10/Android 16 必看） -->
     <TextView
         android:id="@+id/txtRestricted"
@@ -69,7 +78,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="6dp"
-        android:text="测试手势注入（看不到轨迹说明设备层拦截）"
+        android:text="测试手势注入（设置列表会自滑即为正常）"
         android:textSize="12sp" />
 
     <!-- 荣耀/MagicOS 适配区：后台保活三步。检测到荣耀设备时高亮提示 -->

@@ -94,7 +94,12 @@ public class MacroService extends AccessibilityService {
             List<MacroModel.Action> transformed = transform(m, size, delta);
             for (MacroModel.Action a : transformed) {
                 if (cancelled || Thread.currentThread().isInterrupted()) break;
-                dispatchAction(a);
+                if (a.globalAction != 0) {
+                    // 系统动作（返回/主页/最近任务）：与手按返回完全等价
+                    try { performGlobalAction(a.globalAction); } catch (Exception ignored) { }
+                } else {
+                    dispatchAction(a);
+                }
                 sleep(a.maxDuration());
                 sleep(a.delayAfter);
             }
@@ -120,6 +125,7 @@ public class MacroService extends AccessibilityService {
         for (MacroModel.Action a : m.actions) {
             MacroModel.Action na = new MacroModel.Action();
             na.delayAfter = a.delayAfter;
+            na.globalAction = a.globalAction;
             for (MacroModel.Stroke s : a.strokes) {
                 MacroModel.Stroke ns = new MacroModel.Stroke();
                 ns.duration = s.duration;
@@ -181,20 +187,36 @@ public class MacroService extends AccessibilityService {
         }
     }
 
-    /** 自测：在屏幕中央注入一个小方形手势并回调提示。用户能立刻判断注入在设备上是否有效。 */
+    /**
+     * 自测 v2（结果可判定）：对系统设置列表注入一段上滑，
+     * 并把 dispatchGesture 的三种结局全部暴露——
+     * false=系统拒绝；onCancelled=被拦截；onCompleted=注入成功（此时设置列表应已滚动）。
+     */
     void testInject() {
         Point s = screenSize();
-        float cx = s.x / 2f, cy = s.y / 2f, r = 160f;
-        MacroModel.Action a = new MacroModel.Action();
-        MacroModel.Stroke st = new MacroModel.Stroke();
-        st.pts.add(new float[]{cx - r, cy - r});
-        st.pts.add(new float[]{cx + r, cy - r});
-        st.pts.add(new float[]{cx + r, cy + r});
-        st.pts.add(new float[]{cx - r, cy + r});
-        st.pts.add(new float[]{cx - r, cy - r});
-        st.duration = 700;
-        a.strokes.add(st);
-        dispatchAction(a, () -> toast("手势注入完成（若刚看到小方形轨迹，说明注入正常）"));
+        float cx = s.x / 2f;
+        Path p = new Path();
+        p.moveTo(cx, s.y * 0.7f);
+        p.lineTo(cx, s.y * 0.5f);
+        p.lineTo(cx, s.y * 0.3f);
+        GestureDescription desc = new GestureDescription.Builder()
+                .addStroke(new GestureDescription.StrokeDescription(p, 0, 500))
+                .build();
+        boolean accepted = false;
+        try {
+            accepted = dispatchGesture(desc, new GestureResultCallback() {
+                @Override public void onCompleted(GestureDescription g) {
+                    toast("注入已完成：如果刚才设置列表向上滚动了，说明注入通道正常");
+                }
+                @Override public void onCancelled(GestureDescription g) {
+                    toast("手势被系统取消（被设备拦截：查无障碍/受限设置/安全守护）");
+                }
+            }, null);
+        } catch (Exception e) {
+            toast("注入异常：" + e.getMessage());
+            return;
+        }
+        if (!accepted) toast("dispatchGesture 返回 false：系统拒绝注入（服务未就绪或被限制）");
     }
 
     // ------------------------------------------------------------ 工具
