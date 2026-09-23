@@ -148,6 +148,11 @@ public class MacroService extends AccessibilityService {
 
     /** 注入一个手势（多指并行轨迹同一个 GestureDescription，同时开始）。 */
     void dispatchAction(MacroModel.Action a) {
+        dispatchAction(a, null);
+    }
+
+    /** 注入一个手势，可选在完成/取消时回调（用于录制反馈后精确恢复捕获层）。 */
+    void dispatchAction(MacroModel.Action a, Runnable onComplete) {
         GestureDescription.Builder b = new GestureDescription.Builder();
         for (MacroModel.Stroke s : a.strokes) {
             if (s.pts.isEmpty()) continue;
@@ -160,27 +165,64 @@ public class MacroService extends AccessibilityService {
             }
             b.addStroke(new GestureDescription.StrokeDescription(p, 0, Math.max(1, s.duration)));
         }
+        GestureDescription desc = b.build();
+        GestureResultCallback cb = onComplete == null ? null : new GestureResultCallback() {
+            @Override public void onCompleted(GestureDescription gestureDescription) {
+                onComplete.run();
+            }
+            @Override public void onCancelled(GestureDescription gestureDescription) {
+                onComplete.run();
+            }
+        };
         try {
-            dispatchGesture(b.build(), null, null);
-        } catch (Exception ignored) { }
+            dispatchGesture(desc, cb, null);
+        } catch (Exception e) {
+            if (onComplete != null) onComplete.run();
+        }
+    }
+
+    /** 自测：在屏幕中央注入一个小方形手势并回调提示。用户能立刻判断注入在设备上是否有效。 */
+    void testInject() {
+        Point s = screenSize();
+        float cx = s.x / 2f, cy = s.y / 2f, r = 160f;
+        MacroModel.Action a = new MacroModel.Action();
+        MacroModel.Stroke st = new MacroModel.Stroke();
+        st.pts.add(new float[]{cx - r, cy - r});
+        st.pts.add(new float[]{cx + r, cy - r});
+        st.pts.add(new float[]{cx + r, cy + r});
+        st.pts.add(new float[]{cx - r, cy + r});
+        st.pts.add(new float[]{cx - r, cy - r});
+        st.duration = 700;
+        a.strokes.add(st);
+        dispatchAction(a, () -> toast("手势注入完成（若刚看到小方形轨迹，说明注入正常）"));
     }
 
     // ------------------------------------------------------------ 工具
 
     Point screenSize() {
-        DisplayMetrics dm = new DisplayMetrics();
         try {
             WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                // Android 11+ 官方口径：最大窗口边界 = 物理屏尺寸（兼容折叠屏/多窗口）
+                android.graphics.Rect b = wm.getMaximumWindowMetrics().getBounds();
+                return new Point(b.width(), b.height());
+            }
+            DisplayMetrics dm = new DisplayMetrics();
             //noinspection deprecation
             wm.getDefaultDisplay().getRealMetrics(dm);
+            return new Point(dm.widthPixels, dm.heightPixels);
         } catch (Exception e) {
-            dm = getResources().getDisplayMetrics();
+            DisplayMetrics dm = getResources().getDisplayMetrics();
+            return new Point(dm.widthPixels, dm.heightPixels);
         }
-        return new Point(dm.widthPixels, dm.heightPixels);
     }
 
     int displayRotation() {
         try {
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                android.view.Display d = getDisplay();   // Context#getDisplay (API 30+)
+                if (d != null) return d.getRotation();
+            }
             WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
             //noinspection deprecation
             return wm.getDefaultDisplay().getRotation();

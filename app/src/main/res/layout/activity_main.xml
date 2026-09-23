@@ -2,6 +2,7 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:fitsSystemWindows="true"
     android:orientation="vertical"
     android:padding="16dp">
 
@@ -44,12 +45,32 @@
             android:textSize="12sp" />
     </LinearLayout>
 
+    <!-- Android 13+ 侧载应用受限设置提示（MagicOS 10/Android 16 必看） -->
+    <TextView
+        android:id="@+id/txtRestricted"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:background="#14B8A6"
+        android:padding="10dp"
+        android:text="💡 无障碍列表里找不到 TapReplay？侧载应用需先「允许受限设置」→ 点我打开应用信息页（右上角 ⋮ 菜单）"
+        android:textColor="#0F766E"
+        android:textSize="12sp" />
+
     <Button
         android:id="@+id/btnPanel"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
         android:text="显示悬浮控制条" />
+
+    <Button
+        android:id="@+id/btnTest"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:text="测试手势注入（看不到轨迹说明设备层拦截）"
+        android:textSize="12sp" />
 
     <!-- 荣耀/MagicOS 适配区：后台保活三步。检测到荣耀设备时高亮提示 -->
     <TextView

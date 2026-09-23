@@ -207,7 +207,7 @@ public class OverlayController {
         removePanel();          // 面板隐藏：之后的注入（回放验证）不会误触按钮
         addCaptureView();
         showChip(false);
-        svc.toast("录制中（应用暂不响应）→ 操作 → 双击顶部小条结束");
+        svc.toast("录制中：每次抬手后会自动回放刚做的手势，稍候再继续下一步");
     }
 
     private void stopRecord() {
@@ -309,9 +309,40 @@ public class OverlayController {
         if (a.strokes.isEmpty() || current == null) return;
         current.actions.add(a);
         lastAction = a;
-        if (chipText != null)
+        updateChipCount();
+        // 间隙注入：先撤捕获层再把刚录的手势回灌给应用——用户立刻看到应用的真实反馈，
+        // 且注入发生在捕获层下线期间，不会打回捕获层形成自录自放循环。
+        replayForFeedback(a);
+    }
+
+    private void updateChipCount() {
+        if (chipText != null && current != null)
             chipText.setText("● 录制中 " + current.actions.size() + " 个手势 · 双击结束");
-        // 注意：此处不做注入。注入触摸会命中本捕获层形成自录自放循环（v1 教训）。
+    }
+
+    /** 录制反馈：撤捕获层 → 等窗口移除同步到输入系统 → 注入刚录的手势 → 播完恢复捕获层。 */
+    private void replayForFeedback(MacroModel.Action a) {
+        removeCaptureView();
+        if (chipText != null) chipText.setText("↻ 回放刚录的手势…");
+        final long dur = Math.max(60, a.maxDuration());
+        // 关键：removeView 只从 WindowManager 摘窗，输入调度器要等下一次布局同步才知道窗口没了。
+        // 立即注入会命中“正在消失的捕获层”（这就是上一版看不到反馈的原因）——先等 200ms。
+        ui.postDelayed(() -> {
+            if (!recording) return;
+            svc.dispatchAction(a, () -> ui.postDelayed(this::restoreCapture, 80));
+            // 回调在部分 ROM 上可能丢失：兜底按时长 + 1s 强制恢复
+            ui.postDelayed(() -> {
+                if (recording && capture == null) restoreCapture();
+            }, dur + 1000);
+        }, 200);
+    }
+
+    private void restoreCapture() {
+        if (!recording || capture != null) return;
+        removeChip();                   // 重排 z 序：捕获层在下、小条在上
+        addCaptureView();
+        showChip(false);
+        updateChipCount();
     }
 
     // ------------------------------------------------------------ 回放

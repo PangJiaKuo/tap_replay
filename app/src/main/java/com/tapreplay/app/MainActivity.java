@@ -52,8 +52,11 @@ public class MainActivity extends Activity {
                 toast("悬浮窗权限已授予");
         });
         findViewById(R.id.btnPanel).setOnClickListener(v -> showFloatingPanel());
+        findViewById(R.id.btnTest).setOnClickListener(v -> testInject());
         findViewById(R.id.btnImport).setOnClickListener(v -> importMacro());
         txtEmpty = findViewById(R.id.txtEmpty);
+        // Android 13+（含 MagicOS 10 / Android 16）侧载应用的受限设置解除入口
+        findViewById(R.id.txtRestricted).setOnClickListener(v -> openAppDetails());
         setupHonorSection();
 
         ListView list = findViewById(R.id.listMacros);
@@ -81,8 +84,8 @@ public class MainActivity extends Activity {
         TextView note = findViewById(R.id.txtHonorNote);
         boolean isHonor = "honor".equalsIgnoreCase(android.os.Build.MANUFACTURER);
         if (isHonor)
-            note.setText("检测到荣耀设备（" + android.os.Build.MODEL
-                    + " / MagicOS）：请完成下面三项保活设置，否则悬浮条会被后台清理");
+            note.setText("检测到荣耀设备（" + android.os.Build.MODEL + " / MagicOS "
+                    + magicOsHint() + "）：请完成下面三项保活设置，否则悬浮条会被后台清理");
 
         findViewById(R.id.btnBattery).setOnClickListener(v -> {
             try {
@@ -112,10 +115,28 @@ public class MainActivity extends Activity {
         });
     }
 
+    private String magicOsHint() {
+        // MagicOS 10 = Android 16 底包；9 = Android 15。用 SDK 版本粗判显示
+        int sdk = android.os.Build.VERSION.SDK_INT;
+        if (sdk >= 36) return "10";
+        if (sdk >= 35) return "9";
+        return "";
+    }
+
+    private void openAppDetails() {
+        try {
+            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + getPackageName())));
+            toast("点右上角 ⋮ →「允许受限设置」，然后重开无障碍开关");
+        } catch (Exception e) {
+            toast("请手动打开 设置→应用→TapReplay");
+        }
+    }
+
     /** 荣耀自启动/后台运行入口：MagicOS 各版本路径不同，多候选降级。 */
     private void openHonorAutoStart() {
         String[][] candidates = {
-                // MagicOS 8/9：手机管家 → 应用启动管理
+                // MagicOS 8/9/10：手机管家 → 应用启动管理
                 {"com.hihonor.systemmanager", "com.hihonor.systemmanager.optimize.process.ProtectActivity"},
                 // 旧 Magic UI / 华为 EMUI
                 {"com.huawei.systemmanager", "com.huawei.systemmanager.optimize.process.ProtectActivity"},
@@ -130,13 +151,17 @@ public class MainActivity extends Activity {
                 return;
             } catch (Exception ignored) { }
         }
+        // 降级 1：直接拉手机管家首页（MagicOS 10 组件名可能变动，launch intent 最稳）
         try {
-            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                    Uri.parse("package:" + getPackageName())));
-            toast("请在应用信息页允许「自启动 / 后台运行」");
-        } catch (Exception e) {
-            toast("请手动到 手机管家→应用启动管理 中允许本应用");
-        }
+            Intent i = getPackageManager().getLaunchIntentForPackage("com.hihonor.systemmanager");
+            if (i != null) {
+                startActivity(i);
+                toast("请在手机管家 → 应用启动管理 中允许本应用");
+                return;
+            }
+        } catch (Exception ignored) { }
+        // 降级 2：应用信息页
+        openAppDetails();
     }
 
     @Override
@@ -169,6 +194,18 @@ public class MainActivity extends Activity {
         MacroService.instance.showOverlay();
         toast("悬浮控制条已显示，切到目标应用操作吧");
         moveTaskToBack(true);
+    }
+
+    /** 注入自测：2 秒后在屏幕中央画一个小方形，用于判断设备是否拦截手势注入。 */
+    private void testInject() {
+        if (MacroService.instance == null) {
+            toast("请先开启无障碍服务再测试");
+            return;
+        }
+        toast("看屏幕中央：2 秒后注入一个小方形轨迹");
+        moveTaskToBack(true);
+        new Handler(Looper.getMainLooper()).postDelayed(
+                () -> MacroService.instance.testInject(), 2000);
     }
 
     /** 列表里的回放：3 秒倒计时，留时间切到目标应用。 */
